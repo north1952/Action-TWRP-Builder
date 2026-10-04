@@ -36,11 +36,11 @@ on:
       MAKEFILE_NAME:
         description: 'MAKEFILE_NAME'
         required: true
-        default: 'twrp_sm8750_thales'
+        default: 'twrp_sm8750_thales-ap2a'
       BUILD_TARGET:
         description: 'BUILD_TARGET'
         required: true
-        default: 'recovery'
+        default: 'vendorboot'
 
 jobs:
   build:
@@ -156,15 +156,36 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
-        lunch ${{ github.event.inputs.MAKEFILE_NAME }}-eng && make clean
+
+        echo "::group::release configs available in this manifest"
+        ls -1 build/release/flag_values 2>/dev/null || echo "(build/release/flag_values missing)"
+        echo "::endgroup::"
+
+        MK="${{ github.event.inputs.MAKEFILE_NAME }}"
+        LUNCHED=""
+        for cand in "$MK-eng" "$MK-ap2a-eng" "$MK-ap3a-eng" "$MK-ap1a-eng" "twrp_sm8750_thales-ap2a-eng"; do
+          echo "::notice::attempt: lunch $cand"
+          unset TARGET_PRODUCT TARGET_RELEASE TARGET_BUILD_VARIANT
+          lunch "$cand" >/tmp/lunch.out 2>&1 || true
+          tail -n 4 /tmp/lunch.out || true
+          if [ -n "$TARGET_PRODUCT" ]; then LUNCHED="$cand"; break; fi
+        done
+        if [ -z "$LUNCHED" ]; then
+          echo "::error::no valid lunch combo for '$MK' (tried -eng/-ap2a-eng/-ap3a-eng/-ap1a-eng)"
+          exit 1
+        fi
+        echo "::notice::lunched '$LUNCHED' -> TARGET_PRODUCT=$TARGET_PRODUCT TARGET_RELEASE=$TARGET_RELEASE TARGET_BUILD_VARIANT=$TARGET_BUILD_VARIANT"
+        make clean || true
+
         PRODUCT_DIR=out/target/product/${{ github.event.inputs.DEVICE_NAME }}
         set +e
         make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
         echo "::notice::primary target '${{ github.event.inputs.BUILD_TARGET }}image' rc=$?"
-        if [ ! -f "$PRODUCT_DIR/${{ github.event.inputs.BUILD_TARGET }}.img" ]; then
-          echo "::warning::${{ github.event.inputs.BUILD_TARGET }}.img not produced; trying vendorbootimage / bootimage"
+        if ! ls "$PRODUCT_DIR"/*.img >/dev/null 2>&1; then
+          echo "::warning::no .img after primary target; trying vendorbootimage / bootimage / recoveryimage"
           make vendorbootimage -j$(nproc --all); echo "::notice::vendorbootimage rc=$?"
-          make bootimage -j$(nproc --all);      echo "::notice::bootimage rc=$?"
+          make bootimage      -j$(nproc --all); echo "::notice::bootimage rc=$?"
+          make recoveryimage  -j$(nproc --all); echo "::notice::recoveryimage rc=$?"
         fi
         set -e
         echo "::group::Build outputs in $PRODUCT_DIR"
@@ -187,6 +208,7 @@ jobs:
         files: |
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
           workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img.md5
         name: byron-twrp-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
