@@ -51,12 +51,15 @@ jobs:
       run: git clone "$TREE" -b "$TREE_BRANCH" "./$DEVICE_PATH"
     - uses: pierotofy/set-swap-space@master
       with:
-        swap-size-gb: 12
+        swap-size-gb: 16
     - name: build
+      continue-on-error: true
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        export WITH_DEXPREOPT=false
+        export DISABLE_DEXPREOPT=true
         : > "$LOG"
         {
           echo "=== preflight ==="
@@ -73,42 +76,38 @@ jobs:
           lunch "$c" >> "$LOG" 2>&1 || true
           if [ -n "$TARGET_PRODUCT" ]; then L="$c"; break; fi
         done
-        if [ -z "$L" ]; then echo "::error::no valid lunch combo for $MAKEFILE"; exit 1; fi
+        if [ -z "$L" ]; then echo "::error::no valid lunch combo for $MAKEFILE"; fi
         echo "::notice::lunched $L -> $TARGET_PRODUCT $TARGET_RELEASE $TARGET_BUILD_VARIANT"
         OUT="out/target/product/$DEVICE_NAME"
         publish() {
-          tail -n 200 "$LOG" > "$GITHUB_WORKSPACE/build_tail.log"
-          grep -nE "error:|FAILED:|ninja: build stopped|No space left|No rule to make" "$LOG" | tail -n 30 > "$GITHUB_WORKSPACE/errs.txt" || true
+          tail -n 240 "$LOG" > "$GITHUB_WORKSPACE/build_tail.log"
+          grep -nE "error:|FAILED:|ninja: build stopped|No space left|No rule to make|internal compiler error|fatal error|undefined reference|signal|Killed|Out of memory" "$LOG" | tail -n 40 > "$GITHUB_WORKSPACE/errs.txt" || true
           i=0
           while IFS= read -r line; do
-            i=$((i+1))
-            if [ "$i" -gt 10 ]; then break; fi
+            i=$((i+1)); [ "$i" -gt 15 ] && break
             printf "::error::[%s] %s" "$1" "$line" | cut -c1-900
             echo
           done < "$GITHUB_WORKSPACE/errs.txt"
         }
         set +e
-        make "out/soong/build.$PRODUCT_NINJA.ninja" -j$(nproc --all) >> "$LOG" 2>&1
+        echo "=== soong config probe ===" >> "$LOG"
+        make "out/soong/build.$PRODUCT_NINJA.ninja" -j4 >> "$LOG" 2>&1
         prc=$?
         echo "::notice::soong-config probe rc=$prc"
-        set -e
         if grep -q "FAILED: out/soong/build" "$LOG"; then
           publish config
           echo "::error::product config validation failed while generating the soong ninja file"
-          exit 1
         fi
-        set +e
-        make "$TARGETimage" -j$(nproc --all) >> "$LOG" 2>&1
+        echo "=== target build $TARGETimage ===" >> "$LOG"
+        make "$TARGETimage" -j4 >> "$LOG" 2>&1
         echo "::notice::target $TARGETimage rc=$?"
         for t in vendorbootimage bootimage recoveryimage; do
           if ls "$OUT"/*.img > /dev/null 2>&1; then break; fi
-          make "$t" -j$(nproc --all) >> "$LOG" 2>&1
+          make "$t" -j4 >> "$LOG" 2>&1
           echo "::notice::$t rc=$?"
         done
-        set -e
         ls -la "$OUT" >> "$LOG" 2>&1
         publish compile
-        if ! ls "$OUT"/*.img > /dev/null 2>&1; then echo "::error::no image produced by any target"; exit 1; fi
     - uses: softprops/action-gh-release@v2
       if: always()
       with:
@@ -124,3 +123,12 @@ jobs:
         name: byron-twrp-${{ github.run_id }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: verify
+      if: always()
+      run: |
+        if ls workspace/out/target/product/${{ env.DEVICE_NAME }}/*.img > /dev/null 2>&1; then
+          echo "::notice::image present, build succeeded"
+        else
+          echo "::error::no image produced by $TARGET build"
+          exit 1
+        fi
