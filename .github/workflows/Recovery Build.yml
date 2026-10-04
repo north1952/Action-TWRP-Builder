@@ -29,9 +29,24 @@ jobs:
       PRODUCT_NINJA: twrp_sm8750_thales
       TARGET: ${{ github.event.inputs.BUILD_TARGET || (github.ref_name == 'standalone-recovery' && 'recovery' || 'vendorboot') }}
       LOG: ${{ github.workspace }}/build.log
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
     - uses: actions/checkout@v4
     - uses: rokibhasansagar/slimhub_actions@main
+    - name: free-disk
+      run: |
+        set +e
+        echo "=== disk before ==="
+        df -h /
+        sudo rm -rf /usr/local/lib/android 2>/dev/null
+        sudo rm -rf /opt/hostedtoolcache/CodeQL 2>/dev/null
+        sudo rm -rf /usr/share/dotnet 2>/dev/null
+        sudo rm -rf /usr/local/.ghcup 2>/dev/null
+        sudo rm -rf /usr/share/swift 2>/dev/null
+        docker image prune -af >/dev/null 2>&1
+        sudo apt-get clean >/dev/null 2>&1
+        echo "=== disk after ==="
+        df -h /
     - name: deps
       run: sudo apt-get update && sudo apt-get install -yq linux-modules-extra-$(uname -r) gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev lib32ncurses-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev build-essential libgtk-3-dev libglu1-mesa-dev freeglut3-dev git libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses6 python3 tar
     - uses: actions/setup-java@v4
@@ -51,7 +66,7 @@ jobs:
       run: git clone "$TREE" -b "$TREE_BRANCH" "./$DEVICE_PATH"
     - uses: pierotofy/set-swap-space@master
       with:
-        swap-size-gb: 16
+        swap-size-gb: 12
     - name: build
       continue-on-error: true
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
@@ -70,6 +85,19 @@ jobs:
           ls -1 build/release/flag_values
           ls -la "$DEVICE_PATH"
         } >> "$LOG" 2>&1
+        IMG="${TARGET}image"
+        echo "::notice::target resolved to $IMG"
+        (
+          cd "$GITHUB_WORKSPACE" || exit 0
+          gh release create "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" --title "byron-twrp-$GITHUB_RUN_ID" --notes "live build log" >/dev/null 2>&1 || true
+          while true; do
+            sleep 180
+            cp "$LOG" "$GITHUB_WORKSPACE/build.log" 2>/dev/null || true
+            gh release upload "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" build.log --clobber >/dev/null 2>&1 || true
+          done
+        ) &
+        LIVE=$!
+        trap 'kill $LIVE 2>/dev/null || true' EXIT
         L=""
         for c in "$MAKEFILE-eng" "$MAKEFILE-ap2a-eng" "$MAKEFILE-ap3a-eng" "$MAKEFILE-ap4a-eng"; do
           unset TARGET_PRODUCT TARGET_RELEASE TARGET_BUILD_VARIANT
@@ -90,24 +118,19 @@ jobs:
           done < "$GITHUB_WORKSPACE/errs.txt"
         }
         set +e
-        echo "=== soong config probe ===" >> "$LOG"
-        make "out/soong/build.$PRODUCT_NINJA.ninja" -j4 >> "$LOG" 2>&1
-        prc=$?
-        echo "::notice::soong-config probe rc=$prc"
-        if grep -q "FAILED: out/soong/build" "$LOG"; then
-          publish config
-          echo "::error::product config validation failed while generating the soong ninja file"
-        fi
-        echo "=== target build $TARGETimage ===" >> "$LOG"
-        make "$TARGETimage" -j4 >> "$LOG" 2>&1
-        echo "::notice::target $TARGETimage rc=$?"
+        make "$IMG" -j4 >> "$LOG" 2>&1
+        echo "::notice::$IMG rc=$?"
         for t in vendorbootimage bootimage recoveryimage; do
           if ls "$OUT"/*.img > /dev/null 2>&1; then break; fi
+          if [ "$t" = "$IMG" ]; then continue; fi
           make "$t" -j4 >> "$LOG" 2>&1
           echo "::notice::$t rc=$?"
         done
         ls -la "$OUT" >> "$LOG" 2>&1
+        df -h >> "$LOG" 2>&1
         publish compile
+        kill $LIVE 2>/dev/null || true
+        trap - EXIT
     - uses: softprops/action-gh-release@v2
       if: always()
       with:
