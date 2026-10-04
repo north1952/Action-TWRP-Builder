@@ -93,14 +93,11 @@ jobs:
         echo "Build Target    : ${{ env.BUILD_TARGET }}image"
         echo "::endgroup::"
 
-    # You might want to Checkout your repo first, but not mandatory
     - name: Check Out
       uses: actions/checkout@v4
 
-    # Cleanup The Actions Workspace Using Custom Composite Run Actions
     - name: Cleanup
       uses: rokibhasansagar/slimhub_actions@main
-      # That's it! Now use your normal steps
 
     - name: Prepare the environment
       run: |
@@ -190,7 +187,6 @@ jobs:
         LOG="${{ env.LOG }}"
         : > "$LOG"
 
-        # ---- pre-flight diagnostics (also captured in the published log) ----
         {
           echo "===== pre-flight ====="
           echo "date        : $(date -u)"
@@ -255,7 +251,6 @@ jobs:
         echo "::endgroup::"
         { echo "===== outputs ====="; ls -la "$PRODUCT_DIR" 2>/dev/null | head -100; } >> "$LOG"
 
-        # ---- publish the interesting part of the log to the PUBLIC annotations ----
         tail -n 300 "$LOG" > "${{ github.workspace }}/build_tail.log"
         grep -nE '(^|[^A-Za-z])(error:|Error:|ERROR:|FAILED:|fatal error:|ninja: build stopped|No space left on device|No rule to make|is not defined|command not found)' "$LOG" \
             | grep -vE 'ALLOW_MISSING_DEPENDENCIES' | tail -n 40 > "${{ github.workspace }}/errors.txt" || true
