@@ -1,27 +1,34 @@
 name: Recovery Build
 
+# v3 — byron (Xiaomi 17 Max, 2605EPN8EC) fork.
+#   * build log is ALWAYS published (release asset + annotations) so failures are debuggable
+#     without admin access to the job log
+#   * works from workflow_dispatch (inputs) and from a plain `push` (falls back to defaults),
+#     so a run can be started without a PAT
+#   * tries every image target before giving up, and never cancels a sibling run
+
 on:
   workflow_dispatch:
     inputs:
       MANIFEST_URL:
         description: 'MANIFEST_URL (if want to use SSH keys, use git@github.com:XXXXX)'
-        required: true
+        required: false
         default: 'https://github.com/TWRP-Test/platform_manifest_twrp_aosp'
       MANIFEST_BRANCH:
         description: 'MANIFEST_BRANCH'
-        required: true
+        required: false
         default: 'twrp-16.0'
       DEVICE_TREE_URL:
         description: 'DEVICE_TREE_URL'
-        required: true
+        required: false
         default: 'https://github.com/north1952/twrp_device_xiaomi_byron'
       DEVICE_TREE_BRANCH:
-        description: 'DEVICE_TREE_BRANCH'
-        required: true
+        description: 'DEVICE_TREE_BRANCH (blank => main, or "standalone-recovery" when run off that branch)'
+        required: false
         default: 'main'
       DEVICE_PATH:
         description: 'DEVICE_PATH'
-        required: true
+        required: false
         default: 'device/xiaomi/sm8750_thales'
       COMMON_TREE_URL:
         description: 'COMMON_TREE_URL (if no common tree, leave blank)'
@@ -31,35 +38,59 @@ on:
         required: false
       DEVICE_NAME:
         description: 'DEVICE_NAME'
-        required: true
+        required: false
         default: 'sm8750_thales'
       MAKEFILE_NAME:
-        description: 'MAKEFILE_NAME'
-        required: true
+        description: 'MAKEFILE_NAME (without the -eng / -ap2a-eng suffix)'
+        required: false
         default: 'twrp_sm8750_thales-ap2a'
       BUILD_TARGET:
-        description: 'BUILD_TARGET'
-        required: true
+        description: 'BUILD_TARGET (vendorboot | recovery | boot)'
+        required: false
         default: 'vendorboot'
+  push:
+    branches:
+      - main
+      - standalone-recovery
+    paths:
+      - '.github/workflows/Recovery Build.yml'
+
+# never let GitHub cancel a sibling run of the other variant
+concurrency:
+  group: twrp-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     if: github.event.repository.owner.id == github.event.sender.id
     runs-on: ubuntu-24.04
+    timeout-minutes: 350
     permissions:
       contents: write
+    env:
+      MANIFEST_URL: ${{ github.event.inputs.MANIFEST_URL || 'https://github.com/TWRP-Test/platform_manifest_twrp_aosp' }}
+      MANIFEST_BRANCH: ${{ github.event.inputs.MANIFEST_BRANCH || 'twrp-16.0' }}
+      DEVICE_TREE_URL: ${{ github.event.inputs.DEVICE_TREE_URL || 'https://github.com/north1952/twrp_device_xiaomi_byron' }}
+      DEVICE_TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH || (github.ref_name == 'standalone-recovery' && 'standalone-recovery' || 'main') }}
+      DEVICE_PATH: ${{ github.event.inputs.DEVICE_PATH || 'device/xiaomi/sm8750_thales' }}
+      DEVICE_NAME: ${{ github.event.inputs.DEVICE_NAME || 'sm8750_thales' }}
+      MAKEFILE_NAME: ${{ github.event.inputs.MAKEFILE_NAME || 'twrp_sm8750_thales-ap2a' }}
+      BUILD_TARGET: ${{ github.event.inputs.BUILD_TARGET || (github.ref_name == 'standalone-recovery' && 'recovery' || 'vendorboot') }}
+      LOG: ${{ github.workspace }}/build.log
     steps:
     - name: Display Run Parameters
       run: |
-        echo "::group::User Environment Variables"
-        echo "Manifest URL: ${{ github.event.inputs.MANIFEST_URL }}"
-        echo "Manifest Branch: ${{ github.event.inputs.MANIFEST_BRANCH }}"
-        echo "Device Tree URL: ${{ github.event.inputs.DEVICE_TREE_URL }}"
-        echo "Device Tree Branch: ${{ github.event.inputs.DEVICE_TREE_BRANCH }}"
-        echo "Device Path: ${{ github.event.inputs.DEVICE_PATH }}"
-        echo "Device Name: ${{ github.event.inputs.DEVICE_NAME }}"
-        echo "Makefile Name: ${{ github.event.inputs.MAKEFILE_NAME }}"
-        echo "Build Target: ${{ github.event.inputs.BUILD_TARGET }}.img"
+        echo "::group::Effective parameters"
+        echo "event           : ${{ github.event_name }}"
+        echo "ref             : ${{ github.ref_name }}"
+        echo "Manifest URL    : ${{ env.MANIFEST_URL }}"
+        echo "Manifest Branch : ${{ env.MANIFEST_BRANCH }}"
+        echo "Device Tree URL : ${{ env.DEVICE_TREE_URL }}"
+        echo "Device Tree Br  : ${{ env.DEVICE_TREE_BRANCH }}"
+        echo "Device Path     : ${{ env.DEVICE_PATH }}"
+        echo "Device Name     : ${{ env.DEVICE_NAME }}"
+        echo "Makefile Name   : ${{ env.MAKEFILE_NAME }}"
+        echo "Build Target    : ${{ env.BUILD_TARGET }}image"
         echo "::endgroup::"
 
     # You might want to Checkout your repo first, but not mandatory
@@ -89,9 +120,8 @@ jobs:
         java-version: '21'
 
     - name: Setup SSH Keys
-      if: ${{ startsWith(github.event.inputs.MANIFEST_URL, 'git@github.com') || 
-          startsWith(github.event.inputs.DEVICE_TREE_URL, 'git@github.com') ||
-          startsWith(github.event.inputs.COMMON_TREE_URL, 'git@github.com') }}
+      if: ${{ startsWith(env.MANIFEST_URL, 'git@github.com') ||
+          startsWith(env.DEVICE_TREE_URL, 'git@github.com') }}
       uses: webfactory/ssh-agent@v0.9.0
       with:
           ssh-private-key: |
@@ -111,7 +141,7 @@ jobs:
         echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
         git config --global user.name "Nico170420"
         git config --global user.email "b170420nc@gmail.com"
-        repo init --depth=1 -u ${{ github.event.inputs.MANIFEST_URL }} -b ${{ github.event.inputs.MANIFEST_BRANCH }}
+        repo init --depth=1 -u ${{ env.MANIFEST_URL }} -b ${{ env.MANIFEST_BRANCH }}
       id: pwd
 
     - name: Repo Sync
@@ -121,7 +151,7 @@ jobs:
 
     - name: Clone device tree
       run: |
-        git clone ${{ github.event.inputs.DEVICE_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.DEVICE_PATH }}
+        git clone ${{ env.DEVICE_TREE_URL }} -b ${{ env.DEVICE_TREE_BRANCH }} ./${{ env.DEVICE_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Clone common tree
@@ -129,20 +159,20 @@ jobs:
         github.event.inputs.COMMON_TREE_URL != null
         && github.event.inputs.COMMON_PATH != null
       run: |
-        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ github.event.inputs.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
+        git clone ${{ github.event.inputs.COMMON_TREE_URL }} -b ${{ env.DEVICE_TREE_BRANCH }} ./${{ github.event.inputs.COMMON_PATH }}
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
     - name: Check Build Tree
       uses: haya14busa/action-cond@v1
       id: buildtree
       with:
-        cond: ${{ github.event.inputs.MANIFEST_BRANCH == 'twrp-11' || github.event.inputs.MANIFEST_BRANCH == 'twrp-12.1' }}
+        cond: ${{ env.MANIFEST_BRANCH == 'twrp-11' || env.MANIFEST_BRANCH == 'twrp-12.1' }}
         if_true: twrp
         if_false: omni
 
     - name: Sync Device Dependencies
       run: |
-        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ github.event.inputs.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
+        bash ${GITHUB_WORKSPACE}/scripts/convert.sh ${{ env.DEVICE_PATH }}/${{ steps.buildtree.outputs.value }}.dependencies
         repo sync -j$(nproc --all)
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
       continue-on-error: true
@@ -157,63 +187,118 @@ jobs:
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
 
-        echo "::group::release configs available in this manifest"
-        ls -1 build/release/flag_values 2>/dev/null || echo "(build/release/flag_values missing)"
-        echo "::endgroup::"
+        LOG="${{ env.LOG }}"
+        : > "$LOG"
 
-        MK="${{ github.event.inputs.MAKEFILE_NAME }}"
+        # ---- pre-flight diagnostics (also captured in the published log) ----
+        {
+          echo "===== pre-flight ====="
+          echo "date        : $(date -u)"
+          echo "run_id      : ${{ github.run_id }}"
+          echo "event/ref   : ${{ github.event_name }} / ${{ github.ref_name }}"
+          echo "target      : ${{ env.BUILD_TARGET }}image"
+          echo "device tree : ${{ env.DEVICE_TREE_URL }} @ ${{ env.DEVICE_TREE_BRANCH }}"
+          echo "nproc       : $(nproc --all)"
+          echo "----- df -h -----"; df -h
+          echo "----- free -h -----"; free -h
+          echo "----- release configs -----"
+          ls -1 build/release/flag_values 2>/dev/null || echo "(build/release/flag_values missing)"
+          echo "----- device tree ----"
+          ls -la ${{ env.DEVICE_PATH }} | head -40
+          echo "----- prebuilt ----"
+          ls -la ${{ env.DEVICE_PATH }}/prebuilt 2>/dev/null
+        } >> "$LOG" 2>&1
+        sed -n '1,60p' "$LOG"
+
+        MK="${{ env.MAKEFILE_NAME }}"
         LUNCHED=""
-        for cand in "$MK-eng" "$MK-ap2a-eng" "$MK-ap3a-eng" "$MK-ap1a-eng" "twrp_sm8750_thales-ap2a-eng"; do
+        for cand in "$MK-eng" "$MK-ap2a-eng" "$MK-ap3a-eng" "$MK-ap1a-eng" "$MK-ap4a-eng" "twrp_sm8750_thales-ap2a-eng"; do
           echo "::notice::attempt: lunch $cand"
           unset TARGET_PRODUCT TARGET_RELEASE TARGET_BUILD_VARIANT
           lunch "$cand" >/tmp/lunch.out 2>&1 || true
-          tail -n 4 /tmp/lunch.out || true
+          tail -n 6 /tmp/lunch.out >> "$LOG" 2>&1 || true
           if [ -n "$TARGET_PRODUCT" ]; then LUNCHED="$cand"; break; fi
         done
         if [ -z "$LUNCHED" ]; then
-          echo "::error::no valid lunch combo for '$MK' (tried -eng/-ap2a-eng/-ap3a-eng/-ap1a-eng)"
+          echo "::error::no valid lunch combo for '$MK' (tried -eng/-ap2a-eng/-ap3a-eng/-ap1a-eng/-ap4a-eng)"
           exit 1
         fi
         echo "::notice::lunched '$LUNCHED' -> TARGET_PRODUCT=$TARGET_PRODUCT TARGET_RELEASE=$TARGET_RELEASE TARGET_BUILD_VARIANT=$TARGET_BUILD_VARIANT"
-        make clean || true
+        { echo "===== lunch ====="; echo "$LUNCHED -> $TARGET_PRODUCT / $TARGET_RELEASE / $TARGET_BUILD_VARIANT"; } >> "$LOG"
+        make clean >> "$LOG" 2>&1 || true
 
-        PRODUCT_DIR=out/target/product/${{ github.event.inputs.DEVICE_NAME }}
+        PRODUCT_DIR=out/target/product/${{ env.DEVICE_NAME }}
+
+        run_make() {
+          echo ""                              >> "$LOG"
+          echo "===== make $1 ====="               >> "$LOG"
+          make "$1" -j$(nproc --all)           >> "$LOG" 2>&1
+          return $?
+        }
+
         set +e
-        make ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
-        echo "::notice::primary target '${{ github.event.inputs.BUILD_TARGET }}image' rc=$?"
+        run_make "${{ env.BUILD_TARGET }}image"
+        rc=$?
+        echo "::notice::primary target '${{ env.BUILD_TARGET }}image' rc=$rc"
         if ! ls "$PRODUCT_DIR"/*.img >/dev/null 2>&1; then
           echo "::warning::no .img after primary target; trying vendorbootimage / bootimage / recoveryimage"
-          make vendorbootimage -j$(nproc --all); echo "::notice::vendorbootimage rc=$?"
-          make bootimage      -j$(nproc --all); echo "::notice::bootimage rc=$?"
-          make recoveryimage  -j$(nproc --all); echo "::notice::recoveryimage rc=$?"
+          for t in vendorbootimage bootimage recoveryimage; do
+            run_make "$t"
+            echo "::notice::$t rc=$?"
+            ls "$PRODUCT_DIR"/*.img >/dev/null 2>&1 && break
+          done
         fi
         set -e
+
         echo "::group::Build outputs in $PRODUCT_DIR"
-        ls -la "$PRODUCT_DIR" 2>/dev/null | head -80 || true
+        ls -la "$PRODUCT_DIR" 2>/dev/null | head -100 || true
         echo "::endgroup::"
+        { echo "===== outputs ====="; ls -la "$PRODUCT_DIR" 2>/dev/null | head -100; } >> "$LOG"
+
+        # ---- publish the interesting part of the log to the PUBLIC annotations ----
+        tail -n 300 "$LOG" > "${{ github.workspace }}/build_tail.log"
+        grep -nE '(^|[^A-Za-z])(error:|Error:|ERROR:|FAILED:|fatal error:|ninja: build stopped|No space left on device|No rule to make|is not defined|command not found)' "$LOG" \
+            | grep -vE 'ALLOW_MISSING_DEPENDENCIES' | tail -n 40 > "${{ github.workspace }}/errors.txt" || true
+        echo "::group::error lines found"; cat "${{ github.workspace }}/errors.txt" || true; echo "::endgroup::"
+        i=0
+        while IFS= read -r line; do
+          i=$((i+1))
+          [ $i -gt 12 ] && break
+          printf '::error::%s\n' "$(printf '%s' "$line" | cut -c1-900)"
+        done < "${{ github.workspace }}/errors.txt"
+        echo "===== last 12 error lines above; full log is attached to this run's release ====="
+
         shopt -s nullglob
         imgs=("$PRODUCT_DIR"/*.img)
         zips=("$PRODUCT_DIR"/*.zip)
         echo "produced images: ${imgs[*]}"
         echo "produced zips  : ${zips[*]}"
         if [ ${#imgs[@]} -eq 0 ]; then
-          echo "::error::No .img was produced by any target - check the build log above"
+          echo "::error::No .img was produced by any target - full build log is in the release assets (build.log / build_tail.log / errors.txt)"
           exit 1
         fi
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
-    - name: Upload to Release
+    - name: Upload logs and images
+      if: always()
       uses: softprops/action-gh-release@v2
       with:
         files: |
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
-          workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img.md5
+          build.log
+          build_tail.log
+          errors.txt
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.img
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.img.md5
+          workspace/out/target/product/${{ env.DEVICE_NAME }}/*.zip
+        fail_on_unmatched_files: false
         name: byron-twrp-${{ github.run_id }}
         tag_name: ${{ github.run_id }}
         body: |
-          Manifest: ${{ github.event.inputs.MANIFEST_BRANCH }}
-          Device: ${{ github.event.inputs.DEVICE_NAME }}
-          Target: ${{ github.event.inputs.BUILD_TARGET }}.img
+          event: ${{ github.event_name }} (${{ github.ref_name }})
+          Manifest: ${{ env.MANIFEST_BRANCH }}
+          Device tree: ${{ env.DEVICE_TREE_URL }} @ ${{ env.DEVICE_TREE_BRANCH }}
+          Device: ${{ env.DEVICE_NAME }}
+          Target: ${{ env.BUILD_TARGET }}image
+          Lunch: ${{ env.MAKEFILE_NAME }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
