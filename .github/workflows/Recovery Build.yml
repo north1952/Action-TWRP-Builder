@@ -130,12 +130,21 @@ jobs:
         set +e
         make "$IMG" -j4 >> "$LOG" 2>&1
         echo "::notice::$IMG rc=$?"
+        # V10: fallback 只看"本分支的目标镜像"是否存在（V9 及之前只要有任意 *.img
+        # 就 break，standalone 线 vendorbootimage 先成功后 recoveryimage 永不重试）。
+        WANT="recovery.img"; [ "$TARGET" = "vendorboot" ] && WANT="vendor_boot.img"
         for t in vendorbootimage bootimage recoveryimage; do
-          if ls "$OUT"/*.img > /dev/null 2>&1; then break; fi
+          if [ -f "$OUT/$WANT" ]; then break; fi
           if [ "$t" = "$IMG" ]; then continue; fi
           make "$t" -j4 >> "$LOG" 2>&1
           echo "::notice::$t rc=$?"
         done
+        # V10: 兜底——目标镜像仍缺失时把主目标再跑一次（此前各 make 已把公共
+        # 依赖编好，此时主目标要么成功要么快速失败）
+        if [ ! -f "$OUT/$WANT" ]; then
+          make "$IMG" -j4 >> "$LOG" 2>&1
+          echo "::notice::$IMG retry rc=$?"
+        fi
         ls -la "$OUT" >> "$LOG" 2>&1
         df -h >> "$LOG" 2>&1
         publish compile
