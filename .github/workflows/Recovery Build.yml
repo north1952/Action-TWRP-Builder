@@ -25,7 +25,7 @@ jobs:
       TREE_BRANCH: ${{ github.event.inputs.DEVICE_TREE_BRANCH || (github.ref_name == 'standalone-recovery' && 'standalone-recovery' || 'main') }}
       DEVICE_PATH: device/xiaomi/sm8750_thales
       DEVICE_NAME: sm8750_thales
-      MAKEFILE: twrp_sm8750_thales-ap2a
+      MAKEFILE: twrp_sm8750_thales
       PRODUCT_NINJA: twrp_sm8750_thales
       TARGET: ${{ github.event.inputs.BUILD_TARGET || (github.ref_name == 'standalone-recovery' && 'recovery' || 'vendorboot') }}
       LOG: ${{ github.workspace }}/build.log
@@ -73,6 +73,12 @@ jobs:
       run: |
         source build/envsetup.sh
         export ALLOW_MISSING_DEPENDENCIES=true
+        # V9: 跳过 LLNDK ABI 一致性检查。
+        # 根因（V8 build.log line 6372）：全库仅 libbinder_ndk.so.llndk.abidiff 失败，
+        # liblog / libvndksupport / libbinder_ndk.llndk34 同参考(vndk/202404)全部通过，
+        # 说明 manifest 2026-09-11 "Track AOSP 17 UBLK" 使 frameworks/native 新于参考 dump。
+        # 官方逃生门：build/soong/cc/sabi.go -> IsEnvTrue("SKIP_ABI_CHECKS") 直接 return。
+        export SKIP_ABI_CHECKS=true
         export WITH_DEXPREOPT=false
         export DISABLE_DEXPREOPT=true
         : > "$LOG"
@@ -99,7 +105,11 @@ jobs:
         LIVE=$!
         trap 'kill $LIVE 2>/dev/null || true' EXIT
         L=""
-        for c in "$MAKEFILE-eng" "$MAKEFILE-ap2a-eng" "$MAKEFILE-ap3a-eng" "$MAKEFILE-ap4a-eng"; do
+        # V9: bp2a = android-16.0.0_r1（manifest default.xml 锁定的 tag），为 TWRP twrp-16.0 官方写法
+        # （MissMyTime docs/BUILD.md 明确要求 BP2A，且有 "Wrong lunch target" 专节）。
+        # V8 误用 ap2a（Android 14/15 代）；preflight 实测树内可用 release:
+        #   ap2a ap3a ap4a bp1a bp2a eng userdebug
+        for c in "$MAKEFILE-bp2a-eng" "$MAKEFILE-ap3a-eng" "$MAKEFILE-ap4a-eng" "$MAKEFILE-eng"; do
           unset TARGET_PRODUCT TARGET_RELEASE TARGET_BUILD_VARIANT
           lunch "$c" >> "$LOG" 2>&1 || true
           if [ -n "$TARGET_PRODUCT" ]; then L="$c"; break; fi
